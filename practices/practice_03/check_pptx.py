@@ -15,6 +15,7 @@ Style: follows rules from STYLEGUIDE.md (PEP 8 excerpt for practice 3).
 from __future__ import annotations
 
 import os
+import site
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -48,24 +49,24 @@ def ensure_python_pptx() -> None:
     print("[check_pptx] Installing dependency in venv: python-pptx", file=sys.stderr)
     subprocess.check_call([venv_python, "-m", "pip", "install", "python-pptx"]) 
 
-    # Re-exec this script under the venv interpreter so imports succeed
+    # Re-run this script under the venv interpreter so imports succeed
     if os.path.realpath(sys.executable) != os.path.realpath(venv_python):
-        os.execv(venv_python, [venv_python, __file__])
+        script_path = os.path.abspath(__file__)
+        # Use subprocess and exit with child's code to avoid environment quirks
+        proc = subprocess.run([venv_python, script_path] + sys.argv[1:], check=False)
+        sys.exit(proc.returncode)
 
 
-def extract_titles() -> tuple[list[str], list[str]]:
-    """Return (titles, warnings) extracted from PPTX using python-pptx.
+def extract_titles(presentation_cls=None) -> tuple[list[str], list[str]]:
+    """Return (titles, warnings) extracted from PPTX.
 
     Strategy:
-    - Prefer slide.shapes.title if present
-    - Fallback to first text-bearing shape
+    - Prefer slide.shapes.title if present (when python-pptx is available)
+    - Fallback to XML unzip/parse otherwise
     """
 
-    # Try python-pptx path first; fallback to direct XML parsing
-    try:
-        from pptx import Presentation  # type: ignore
-
-        prs = Presentation(PPTX_PATH)
+    if presentation_cls is not None:
+        prs = presentation_cls(PPTX_PATH)
         titles: list[str] = []
         warnings: list[str] = []
 
@@ -90,32 +91,32 @@ def extract_titles() -> tuple[list[str], list[str]]:
             titles.append(text)
 
         return titles, warnings
-    except ImportError:
-        # Fallback: raw XML parse (no python-pptx)
-        titles: list[str] = []
-        warnings: list[str] = [
-            "python-pptx unavailable; used XML fallback for text extraction"
-        ]
-        with zipfile.ZipFile(PPTX_PATH, "r") as zf:
-            slide_names = sorted(
-                [n for n in zf.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]
-            )
-            ns = {
-                "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
-                "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
-            }
-            for name in slide_names:
-                with zf.open(name) as fp:
-                    tree = ET.parse(fp)
-                root = tree.getroot()
-                # Find first text chunk: <a:t>
-                text = ""
-                for elt in root.findall('.//a:t', ns):
-                    if elt.text and elt.text.strip():
-                        text = elt.text.strip()
-                        break
-                titles.append(text)
-        return titles, warnings
+
+    # Fallback: raw XML parse (no python-pptx)
+    titles: list[str] = []
+    warnings: list[str] = [
+        "python-pptx unavailable; used XML fallback for text extraction"
+    ]
+    with zipfile.ZipFile(PPTX_PATH, "r") as zf:
+        slide_names = sorted(
+            [n for n in zf.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]
+        )
+        ns = {
+            "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+            "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        }
+        for name in slide_names:
+            with zf.open(name) as fp:
+                tree = ET.parse(fp)
+            root = tree.getroot()
+            # Find first text chunk: <a:t>
+            text = ""
+            for elt in root.findall('.//a:t', ns):
+                if elt.text and elt.text.strip():
+                    text = elt.text.strip()
+                    break
+            titles.append(text)
+    return titles, warnings
 
 
 def print_report(titles: list[str], warnings: list[str]) -> None:
@@ -149,8 +150,32 @@ def evaluate(titles: list[str]) -> tuple[bool, list[str]]:
 def main() -> int:
     ensure_python_pptx()
 
+    # Attempt to import python-pptx after ensuring environment
+    # Force site-packages to the front of sys.path to avoid namespace shadowing
+    sp_list = []
+    if hasattr(site, "getsitepackages"):
+        # getsitepackages may not exist in some embedders; guard via hasattr
+        sp_list = list(reversed(site.getsitepackages()))
+    for sp in sp_list:
+        if sp not in sys.path:
+            sys.path.insert(0, sp)
+
     try:
-        titles, warnings = extract_titles()
+        from pptx import Presentation  # type: ignore
+    except ImportError:
+        # Second-chance import: avoid implicit namespace packages like skills/pptx
+        # that can shadow the installed python-pptx distribution.
+        for path in list(sys.path):
+            if ("/skills" in path or path.rstrip(os.sep).endswith("skills")) and path in sys.path:
+                sys.path.remove(path)
+        sys.modules.pop("pptx", None)
+        try:
+            from pptx import Presentation  # type: ignore
+        except ImportError:
+            Presentation = None
+
+    try:
+        titles, warnings = extract_titles(Presentation)
     except FileNotFoundError:
         print(f"Error: file not found: {PPTX_PATH}", file=sys.stderr)
         return 1

@@ -9,6 +9,11 @@
       "type": "local",
       "command": ["npx", "-y", "@upstash/context7-mcp"],
       "enabled": true
+    },
+    "pptx-reader": {
+      "type": "local",
+      "command": ["python3", "mcp/pptx-reader/server.py"],
+      "enabled": true
     }
   },
   "provider": {

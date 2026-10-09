@@ -25,10 +25,13 @@ def ensure_ruff() -> str:
 
 def main() -> int:
     runner = ensure_ruff()
-    # Run ruff on current practice dir; exclude lab/** to respect demo boundaries
-    cmd = runner.split() + ['check', '--exclude', 'lab/**', '.']
-    print('Running', ' '.join(cmd))
-    return subprocess.call(cmd)
+    # First auto-fix, then check; exclude lab/** to respect demo boundaries
+    fix_cmd = runner.split() + ['check', '--fix', '--exclude', 'lab/**', '.']
+    print('Running', ' '.join(fix_cmd))
+    subprocess.call(fix_cmd)
+    check_cmd = runner.split() + ['check', '--exclude', 'lab/**', '.']
+    print('Running', ' '.join(check_cmd))
+    return subprocess.call(check_cmd)
 
 
 if __name__ == '__main__':
